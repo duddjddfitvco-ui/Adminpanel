@@ -1,32 +1,131 @@
 --[[
 Place this LocalScript in: StarterPlayer > StarterPlayerScripts
-It generates the entire admin UI at runtime using Instance.new().
+Builds a light frosted-glass Admin Panel entirely with Instance.new().
 ]]
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
 local localPlayer = Players.LocalPlayer
 
-local remotesFolder = ReplicatedStorage:WaitForChild("AdminRemotes")
-local requestRemote = remotesFolder:WaitForChild("AdminRequest")
-local responseRemote = remotesFolder:WaitForChild("AdminResponse")
+local remotes = ReplicatedStorage:WaitForChild("AdminRemotes")
+local requestRemote = remotes:WaitForChild("AdminRequest")
+local responseRemote = remotes:WaitForChild("AdminResponse")
 
-local pending = {}
-local reqId = 0
+local Colors = {
+	Panel = Color3.fromRGB(245, 245, 250),
+	PanelAlt = Color3.fromRGB(237, 241, 247),
+	PanelSoft = Color3.fromRGB(230, 236, 245),
+	Blue = Color3.fromRGB(59, 130, 246),
+	Text = Color3.fromRGB(51, 65, 85),
+	TextSoft = Color3.fromRGB(100, 116, 139),
+	White = Color3.fromRGB(255, 255, 255),
+	Error = Color3.fromRGB(220, 38, 38),
+}
+
+local ui = {}
+local pendingCallbacks = {}
+local requestId = 0
+local currentTargetName = nil
+
+local function addRound(instance, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius)
+	corner.Parent = instance
+end
+
+local function addStroke(instance, color, transparency)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Transparency = transparency
+	stroke.Thickness = 1
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	stroke.Parent = instance
+end
+
+local function makeFrame(parent, name, size, position, color, transparency, radius)
+	local frame = Instance.new("Frame")
+	frame.Name = name
+	frame.Size = size
+	frame.Position = position
+	frame.BackgroundColor3 = color
+	frame.BackgroundTransparency = transparency or 0
+	frame.BorderSizePixel = 0
+	frame.Parent = parent
+	addRound(frame, radius or 18)
+	return frame
+end
+
+local function makeLabel(parent, name, text, size, position, textSize, color, bold)
+	local label = Instance.new("TextLabel")
+	label.Name = name
+	label.Size = size
+	label.Position = position
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = color or Colors.Text
+	label.TextSize = textSize or 14
+	label.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = parent
+	return label
+end
+
+local function makeButton(parent, name, text, size, position, bgColor, textColor)
+	local button = Instance.new("TextButton")
+	button.Name = name
+	button.Size = size
+	button.Position = position
+	button.BackgroundColor3 = bgColor
+	button.TextColor3 = textColor or Colors.Text
+	button.Text = text
+	button.Font = Enum.Font.GothamSemibold
+	button.TextSize = 14
+	button.AutoButtonColor = false
+	button.BorderSizePixel = 0
+	button.Parent = parent
+	addRound(button, 12)
+	return button
+end
+
+local function makeTextBox(parent, name, placeholder, size, position)
+	local box = Instance.new("TextBox")
+	box.Name = name
+	box.Size = size
+	box.Position = position
+	box.BackgroundColor3 = Colors.PanelSoft
+	box.BackgroundTransparency = 0.2
+	box.TextColor3 = Colors.Text
+	box.PlaceholderColor3 = Colors.TextSoft
+	box.PlaceholderText = placeholder
+	box.Text = ""
+	box.ClearTextOnFocus = false
+	box.Font = Enum.Font.Gotham
+	box.TextSize = 14
+	box.BorderSizePixel = 0
+	box.Parent = parent
+	addRound(box, 12)
+	return box
+end
+
+local function setStatus(text, isError)
+	ui.StatusLabel.Text = text
+	ui.StatusLabel.TextColor3 = isError and Colors.Error or Colors.Text
+end
 
 local function sendRequest(action, payload, callback)
-	reqId += 1
-	local id = reqId
+	requestId += 1
+	local id = requestId
 	if callback then
-		pending[id] = callback
+		pendingCallbacks[id] = callback
 	end
 	requestRemote:FireServer({
 		requestId = id,
 		action = action,
-		payload = payload or {}
+		payload = payload or {},
 	})
 end
 
@@ -34,336 +133,301 @@ responseRemote.OnClientEvent:Connect(function(packet)
 	if typeof(packet) ~= "table" then
 		return
 	end
-	local id = packet.requestId
-	if id and pending[id] then
-		pending[id](packet)
-		pending[id] = nil
+
+	if packet.requestId and pendingCallbacks[packet.requestId] then
+		pendingCallbacks[packet.requestId](packet)
+		pendingCallbacks[packet.requestId] = nil
+	elseif packet.type == "Broadcast" then
+		setStatus(packet.message or "Server message", false)
 	end
 end)
 
-local COLORS = {
-	bg = Color3.fromRGB(22, 27, 34),
-	panel = Color3.fromRGB(30, 36, 45),
-	panel2 = Color3.fromRGB(36, 43, 54),
-	accent = Color3.fromRGB(59, 130, 246), -- #3B82F6
-	text = Color3.fromRGB(245, 247, 250),
-	muted = Color3.fromRGB(170, 180, 195),
-	error = Color3.fromRGB(239, 68, 68)
-}
-
-local function round(instance, radius)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, radius or 10)
-	c.Parent = instance
-end
-
-local function makeLabel(parent, name, text, size, pos, color, align)
-	local lbl = Instance.new("TextLabel")
-	lbl.Name = name
-	lbl.BackgroundTransparency = 1
-	lbl.Text = text
-	lbl.TextColor3 = color or COLORS.text
-	lbl.TextXAlignment = align or Enum.TextXAlignment.Left
-	lbl.Font = Enum.Font.Gotham
-	lbl.TextSize = 14
-	lbl.Size = size
-	lbl.Position = pos
-	lbl.Parent = parent
-	return lbl
-end
-
-local function makeButton(parent, name, text, size, pos, bg)
-	local btn = Instance.new("TextButton")
-	btn.Name = name
-	btn.Text = text
-	btn.Font = Enum.Font.GothamSemibold
-	btn.TextSize = 14
-	btn.TextColor3 = COLORS.text
-	btn.BackgroundColor3 = bg or COLORS.panel2
-	btn.Size = size
-	btn.Position = pos
-	btn.AutoButtonColor = false
-	btn.Parent = parent
-	round(btn, 8)
-	return btn
-end
-
-local ui = {}
-
-local function setStatus(text, isError)
-	if ui.StatusLabel then
-		ui.StatusLabel.Text = text
-		ui.StatusLabel.TextColor3 = isError and COLORS.error or COLORS.text
+local function selectTab(tabName)
+	for name, page in pairs(ui.Pages) do
+		page.Visible = (name == tabName)
+	end
+	for name, button in pairs(ui.NavButtons) do
+		local target = (name == tabName) and Colors.Blue or Colors.PanelSoft
+		local textColor = (name == tabName) and Colors.White or Colors.Text
+		TweenService:Create(button, TweenInfo.new(0.15), {
+			BackgroundColor3 = target,
+			TextColor3 = textColor,
+		}):Play()
 	end
 end
 
-local function setSelected(navButton)
-	for _, b in pairs(ui.NavButtons) do
-		local target = (b == navButton) and COLORS.accent or COLORS.panel2
-		TweenService:Create(b, TweenInfo.new(0.15), {BackgroundColor3 = target}):Play()
-	end
+local function fillPlayerData(data)
+	ui.AccountName.Text = "Name: " .. tostring(data.displayName or data.username or "-")
+	ui.AccountUserId.Text = "UserId: " .. tostring(data.userId or "-")
+	ui.AccountRole.Text = "Role: " .. tostring(data.role or "Player")
+	ui.DataCoins.Text = "Coins: " .. tostring((data.stats and data.stats.Coins) or 0)
+	ui.DataLevel.Text = "Level: " .. tostring((data.stats and data.stats.Level) or 0)
 end
 
-local function switchTab(name)
-	for tabName, frame in pairs(ui.Pages) do
-		frame.Visible = (tabName == name)
-	end
-	setSelected(ui.NavButtons[name])
+local function setupSmoothDrag(dragHandle, panel)
+	local dragging = false
+	local dragStart = Vector2.zero
+	local panelStart = Vector2.zero
+	local targetPos = panel.Position
+	local lerpAlpha = 0.22
+
+	dragHandle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStart = UserInputService:GetMouseLocation()
+			panelStart = Vector2.new(panel.Position.X.Scale, panel.Position.Y.Scale)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+
+	RunService.RenderStepped:Connect(function()
+		if dragging then
+			local now = UserInputService:GetMouseLocation()
+			local delta = now - dragStart
+			local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+			local dxScale = delta.X / viewport.X
+			local dyScale = delta.Y / viewport.Y
+			targetPos = UDim2.fromScale(panelStart.X + dxScale, panelStart.Y + dyScale)
+		end
+
+		local current = panel.Position
+		local newX = current.X.Scale + (targetPos.X.Scale - current.X.Scale) * lerpAlpha
+		local newY = current.Y.Scale + (targetPos.Y.Scale - current.Y.Scale) * lerpAlpha
+		panel.Position = UDim2.fromScale(newX, newY)
+	end)
 end
 
-local function buildUI()
-	local playerGui = localPlayer:WaitForChild("PlayerGui")
-
+local function buildGui()
 	local screen = Instance.new("ScreenGui")
 	screen.Name = "AutoAdminPanel"
-	screen.ResetOnSpawn = false
 	screen.IgnoreGuiInset = true
+	screen.ResetOnSpawn = false
 	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	screen.Parent = playerGui
+	screen.Parent = localPlayer:WaitForChild("PlayerGui")
 
-	local main = Instance.new("Frame")
-	main.Name = "MainPanel"
-	main.Size = UDim2.fromScale(0.78, 0.72)
-	main.Position = UDim2.fromScale(0.11, 0.14)
-	main.BackgroundColor3 = COLORS.bg
-	main.BackgroundTransparency = 0.15
-	main.Visible = false
-	main.Parent = screen
-	round(main, 14)
+	local panel = makeFrame(
+		screen,
+		"MainPanel",
+		UDim2.fromScale(0.78, 0.74),
+		UDim2.fromScale(0.11, 0.13),
+		Colors.Panel,
+		0.2,
+		16
+	)
+	addStroke(panel, Color3.fromRGB(200, 210, 225), 0.2)
+	panel.Visible = false
+	ui.MainPanel = panel
 
-	local top = Instance.new("Frame")
-	top.Name = "TopBar"
-	top.Size = UDim2.new(1, -16, 0, 54)
-	top.Position = UDim2.new(0, 8, 0, 8)
-	top.BackgroundColor3 = COLORS.panel
-	top.Parent = main
-	round(top, 12)
+	local topBar = makeFrame(panel, "TopBar", UDim2.new(1, -16, 0, 56), UDim2.new(0, 8, 0, 8), Colors.PanelAlt, 0.15, 14)
+	addStroke(topBar, Color3.fromRGB(210, 220, 235), 0.3)
 
-	ui.UptimeLabel = makeLabel(top, "Uptime", "Up-time: 00m 00s", UDim2.new(0.5, -8, 1, 0), UDim2.new(0, 10, 0, 0))
-	ui.PlayersLabel = makeLabel(top, "Players", "Players: 0", UDim2.new(0.5, -8, 1, 0), UDim2.new(0.5, 0, 0, 0))
+	local stat1 = makeLabel(topBar, "UptimeTitle", "Server up-time:", UDim2.new(0, 130, 1, 0), UDim2.new(0, 12, 0, 0), 14, Colors.Text, true)
+	stat1.TextYAlignment = Enum.TextYAlignment.Center
+	ui.UptimeValue = makeLabel(topBar, "UptimeValue", "0m", UDim2.new(0, 120, 1, 0), UDim2.new(0, 148, 0, 0), 14, Colors.Text, true)
+	ui.UptimeValue.TextYAlignment = Enum.TextYAlignment.Center
 
-	local side = Instance.new("Frame")
-	side.Name = "Sidebar"
-	side.Size = UDim2.new(0, 180, 1, -92)
-	side.Position = UDim2.new(0, 8, 0, 70)
-	side.BackgroundColor3 = COLORS.panel
-	side.Parent = main
-	round(side, 12)
+	local stat2 = makeLabel(topBar, "PlayersTitle", "Players:", UDim2.new(0, 80, 1, 0), UDim2.new(0, 300, 0, 0), 14, Colors.Text, true)
+	stat2.TextYAlignment = Enum.TextYAlignment.Center
+	ui.PlayersValue = makeLabel(topBar, "PlayersValue", "0", UDim2.new(0, 70, 1, 0), UDim2.new(0, 380, 0, 0), 14, Colors.Text, true)
+	ui.PlayersValue.TextYAlignment = Enum.TextYAlignment.Center
 
-	makeLabel(side, "Title", "ADMIN", UDim2.new(1, -16, 0, 30), UDim2.new(0, 8, 0, 8), COLORS.text, Enum.TextXAlignment.Center)
+	local sidebar = makeFrame(panel, "Sidebar", UDim2.new(0, 190, 1, -96), UDim2.new(0, 8, 0, 70), Colors.PanelAlt, 0.1, 14)
+	addStroke(sidebar, Color3.fromRGB(210, 220, 235), 0.3)
 
-	local navContainer = Instance.new("Frame")
-	navContainer.Name = "NavContainer"
-	navContainer.BackgroundTransparency = 1
-	navContainer.Size = UDim2.new(1, -16, 1, -50)
-	navContainer.Position = UDim2.new(0, 8, 0, 42)
-	navContainer.Parent = side
+	local profile = makeFrame(sidebar, "Profile", UDim2.new(1, -12, 0, 60), UDim2.new(0, 6, 0, 6), Colors.PanelSoft, 0.15, 12)
+	makeLabel(profile, "UserName", localPlayer.DisplayName, UDim2.new(1, -12, 0, 22), UDim2.new(0, 8, 0, 6), 15, Colors.Text, true)
+	makeLabel(profile, "AtUser", "@" .. localPlayer.Name, UDim2.new(1, -12, 0, 18), UDim2.new(0, 8, 0, 30), 13, Colors.TextSoft, false)
+
+	local navHolder = Instance.new("Frame")
+	navHolder.Name = "NavHolder"
+	navHolder.BackgroundTransparency = 1
+	navHolder.Size = UDim2.new(1, -12, 1, -78)
+	navHolder.Position = UDim2.new(0, 6, 0, 72)
+	navHolder.Parent = sidebar
 
 	local navLayout = Instance.new("UIListLayout")
 	navLayout.Padding = UDim.new(0, 8)
-	navLayout.FillDirection = Enum.FillDirection.Vertical
-	navLayout.Parent = navContainer
+	navLayout.Parent = navHolder
 
-	local content = Instance.new("Frame")
-	content.Name = "Content"
-	content.Size = UDim2.new(1, -204, 1, -92)
-	content.Position = UDim2.new(0, 196, 0, 70)
-	content.BackgroundColor3 = COLORS.panel
-	content.Parent = main
-	round(content, 12)
+	local content = makeFrame(panel, "Content", UDim2.new(1, -206, 1, -96), UDim2.new(0, 198, 0, 70), Colors.PanelAlt, 0.1, 14)
+	addStroke(content, Color3.fromRGB(210, 220, 235), 0.3)
 
-	local status = Instance.new("TextLabel")
-	status.Name = "StatusLabel"
-	status.Size = UDim2.new(1, -16, 0, 22)
-	status.Position = UDim2.new(0, 8, 1, -26)
-	status.BackgroundTransparency = 1
-	status.Text = "Ready"
-	status.Font = Enum.Font.Gotham
-	status.TextSize = 13
-	status.TextXAlignment = Enum.TextXAlignment.Left
-	status.TextColor3 = COLORS.text
-	status.Parent = main
-	ui.StatusLabel = status
+	ui.StatusLabel = makeLabel(panel, "StatusLabel", "Ready", UDim2.new(1, -16, 0, 22), UDim2.new(0, 10, 1, -26), 14, Colors.Text, true)
 
-	ui.Pages = {}
-	local function makePage(name)
-		local page = Instance.new("Frame")
-		page.Name = name .. "Page"
-		page.BackgroundTransparency = 1
-		page.Size = UDim2.new(1, -14, 1, -14)
-		page.Position = UDim2.new(0, 7, 0, 7)
-		page.Visible = false
-		page.Parent = content
-		ui.Pages[name] = page
-		return page
-	end
+	local dataPage = Instance.new("Frame")
+	dataPage.Name = "DataPage"
+	dataPage.BackgroundTransparency = 1
+	dataPage.Size = UDim2.new(1, -12, 1, -12)
+	dataPage.Position = UDim2.new(0, 6, 0, 6)
+	dataPage.Parent = content
 
-	local dataPage = makePage("Data")
-	local charPage = makePage("Character")
-	local worldPage = makePage("World")
-	local toolsPage = makePage("Tools")
+	local characterPage = dataPage:Clone()
+	characterPage.Name = "CharacterPage"
+	characterPage.Parent = content
+	characterPage.Visible = false
+
+	local worldPage = dataPage:Clone()
+	worldPage.Name = "WorldPage"
+	worldPage.Parent = content
+	worldPage.Visible = false
+
+	local toolsPage = dataPage:Clone()
+	toolsPage.Name = "ToolsPage"
+	toolsPage.Parent = content
+	toolsPage.Visible = false
+
+	ui.Pages = {
+		Data = dataPage,
+		Character = characterPage,
+		World = worldPage,
+		Tools = toolsPage,
+	}
 
 	ui.NavButtons = {}
-	for _, name in ipairs({"Data", "Character", "World", "Tools"}) do
-		local btn = makeButton(navContainer, name, name, UDim2.new(1, 0, 0, 36), UDim2.new(), COLORS.panel2)
-		ui.NavButtons[name] = btn
-		btn.MouseButton1Click:Connect(function()
-			switchTab(name)
+	for _, tabName in ipairs({ "Data", "Character", "World", "Tools" }) do
+		local b = makeButton(navHolder, tabName .. "Btn", tabName, UDim2.new(1, 0, 0, 38), UDim2.new(), Colors.PanelSoft, Colors.Text)
+		ui.NavButtons[tabName] = b
+		b.MouseButton1Click:Connect(function()
+			selectTab(tabName)
 		end)
 	end
 
-	-- Data page
-	ui.SearchBox = Instance.new("TextBox")
-	ui.SearchBox.Name = "SearchBox"
-	ui.SearchBox.Size = UDim2.new(1, -16, 0, 34)
-	ui.SearchBox.Position = UDim2.new(0, 8, 0, 8)
-	ui.SearchBox.BackgroundColor3 = COLORS.panel2
-	ui.SearchBox.PlaceholderText = "Username..."
-	ui.SearchBox.Text = ""
-	ui.SearchBox.Font = Enum.Font.Gotham
-	ui.SearchBox.TextSize = 14
-	ui.SearchBox.TextColor3 = COLORS.text
-	ui.SearchBox.PlaceholderColor3 = COLORS.muted
-	ui.SearchBox.Parent = dataPage
-	round(ui.SearchBox, 8)
+	ui.SearchBox = makeTextBox(dataPage, "SearchBox", "Username...", UDim2.new(1, -16, 0, 36), UDim2.new(0, 8, 0, 8))
+	local account = makeFrame(dataPage, "AccountSection", UDim2.new(1, -16, 0, 110), UDim2.new(0, 8, 0, 54), Colors.PanelSoft, 0.15, 12)
+	makeLabel(account, "AccountTitle", "Account info", UDim2.new(1, -12, 0, 24), UDim2.new(0, 8, 0, 6), 18, Colors.Text, true)
+	ui.AccountName = makeLabel(account, "AccountName", "Name: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 35), 14, Colors.TextSoft, false)
+	ui.AccountUserId = makeLabel(account, "AccountUserId", "UserId: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 58), 14, Colors.TextSoft, false)
+	ui.AccountRole = makeLabel(account, "AccountRole", "Role: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 81), 14, Colors.TextSoft, false)
 
-	local account = Instance.new("Frame")
-	account.Name = "AccountInfo"
-	account.Size = UDim2.new(1, -16, 0, 110)
-	account.Position = UDim2.new(0, 8, 0, 52)
-	account.BackgroundColor3 = COLORS.panel2
-	account.Parent = dataPage
-	round(account, 10)
-	makeLabel(account, "Title", "Account info", UDim2.new(1, -12, 0, 24), UDim2.new(0, 8, 0, 4), COLORS.text)
-	ui.NameLabel = makeLabel(account, "Name", "Name: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 30), COLORS.muted)
-	ui.UserIdLabel = makeLabel(account, "UserId", "UserId: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 52), COLORS.muted)
+	local dataSection = makeFrame(dataPage, "DataSection", UDim2.new(1, -16, 0, 90), UDim2.new(0, 8, 0, 170), Colors.PanelSoft, 0.15, 12)
+	makeLabel(dataSection, "DataTitle", "Data", UDim2.new(1, -12, 0, 24), UDim2.new(0, 8, 0, 6), 18, Colors.Text, true)
+	ui.DataCoins = makeLabel(dataSection, "Coins", "Coins: -", UDim2.new(0.5, -8, 0, 20), UDim2.new(0, 8, 0, 38), 14, Colors.TextSoft, false)
+	ui.DataLevel = makeLabel(dataSection, "Level", "Level: -", UDim2.new(0.5, -8, 0, 20), UDim2.new(0.5, 0, 0, 38), 14, Colors.TextSoft, false)
 
-	local stats = Instance.new("Frame")
-	stats.Name = "Stats"
-	stats.Size = UDim2.new(1, -16, 0, 94)
-	stats.Position = UDim2.new(0, 8, 0, 170)
-	stats.BackgroundColor3 = COLORS.panel2
-	stats.Parent = dataPage
-	round(stats, 10)
-	makeLabel(stats, "Title", "Data", UDim2.new(1, -12, 0, 24), UDim2.new(0, 8, 0, 4), COLORS.text)
-	ui.CoinsLabel = makeLabel(stats, "Coins", "Coins: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 30), COLORS.muted)
-	ui.LevelLabel = makeLabel(stats, "Level", "Level: -", UDim2.new(1, -12, 0, 20), UDim2.new(0, 8, 0, 52), COLORS.muted)
+	ui.KickButton = makeButton(characterPage, "KickButton", "Kick", UDim2.new(0, 120, 0, 36), UDim2.new(0, 8, 0, 8), Colors.Blue, Colors.White)
+	ui.BanButton = makeButton(characterPage, "BanButton", "Ban", UDim2.new(0, 120, 0, 36), UDim2.new(0, 136, 0, 8), Colors.Blue, Colors.White)
+	ui.HealButton = makeButton(characterPage, "HealButton", "Heal", UDim2.new(0, 120, 0, 36), UDim2.new(0, 264, 0, 8), Colors.Blue, Colors.White)
+	ui.TeleportButton = makeButton(characterPage, "TeleportButton", "Bring", UDim2.new(0, 120, 0, 36), UDim2.new(0, 392, 0, 8), Colors.Blue, Colors.White)
 
-	-- Character page
-	ui.KickBtn = makeButton(charPage, "Kick", "Kick", UDim2.new(0, 120, 0, 34), UDim2.new(0, 8, 0, 8), COLORS.accent)
-	ui.BanBtn = makeButton(charPage, "Ban", "Ban", UDim2.new(0, 120, 0, 34), UDim2.new(0, 136, 0, 8), COLORS.accent)
-	ui.HealBtn = makeButton(charPage, "Heal", "Heal", UDim2.new(0, 120, 0, 34), UDim2.new(0, 264, 0, 8), COLORS.accent)
-
-	-- World page
-	ui.TimeBox = Instance.new("TextBox")
-	ui.TimeBox.Name = "TimeBox"
-	ui.TimeBox.Size = UDim2.new(0, 180, 0, 34)
-	ui.TimeBox.Position = UDim2.new(0, 8, 0, 8)
-	ui.TimeBox.BackgroundColor3 = COLORS.panel2
-	ui.TimeBox.PlaceholderText = "HH:MM:SS"
+	ui.TimeBox = makeTextBox(worldPage, "TimeBox", "HH:MM:SS", UDim2.new(0, 180, 0, 36), UDim2.new(0, 8, 0, 8))
 	ui.TimeBox.Text = "14:00:00"
-	ui.TimeBox.Font = Enum.Font.Gotham
-	ui.TimeBox.TextSize = 14
-	ui.TimeBox.TextColor3 = COLORS.text
-	ui.TimeBox.PlaceholderColor3 = COLORS.muted
-	ui.TimeBox.Parent = worldPage
-	round(ui.TimeBox, 8)
+	ui.SetTimeButton = makeButton(worldPage, "SetTimeButton", "Set Time", UDim2.new(0, 120, 0, 36), UDim2.new(0, 196, 0, 8), Colors.Blue, Colors.White)
 
-	ui.SetTimeBtn = makeButton(worldPage, "SetTime", "Set Time", UDim2.new(0, 120, 0, 34), UDim2.new(0, 196, 0, 8), COLORS.accent)
+	makeLabel(toolsPage, "ToolsLabel", "Tools tab ready for your custom actions.", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 8), 14, Colors.TextSoft, false)
 
-	-- Tools page placeholder
-	makeLabel(toolsPage, "Info", "Tools tab scaffolded (add your own tool actions here).", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 8), COLORS.muted)
+	setupSmoothDrag(topBar, panel)
+	selectTab("Data")
 
-	return screen, main
+	return panel
 end
 
-local currentTarget = nil
-
-sendRequest("Init", {}, function(initPacket)
-	if not initPacket.ok then
-		warn("Admin panel denied: " .. tostring(initPacket.message))
-		return
-	end
-
-	local _, mainPanel = buildUI()
-	switchTab("Data")
-	setStatus("Press RightShift to open/close", false)
-
-	local serverStart = (initPacket.data and initPacket.data.serverStart) or os.time()
-	task.spawn(function()
-		while mainPanel.Parent do
-			task.wait(1)
-			local elapsed = os.time() - serverStart
-			local mins = math.floor(elapsed / 60)
-			local secs = elapsed % 60
-			ui.UptimeLabel.Text = string.format("Up-time: %02dm %02ds", mins, secs)
-			ui.PlayersLabel.Text = "Players: " .. tostring(#Players:GetPlayers())
-		end
-	end)
-
-	UserInputService.InputBegan:Connect(function(input, gp)
-		if gp then return end
-		if input.KeyCode == Enum.KeyCode.RightShift then
-			mainPanel.Visible = not mainPanel.Visible
-		end
-	end)
-
+local function wireActions(mainPanel)
 	ui.SearchBox.FocusLost:Connect(function(enterPressed)
-		if not enterPressed then return end
-		local username = ui.SearchBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
-		if username == "" then
-			setStatus("Type a username first", true)
+		if not enterPressed then
+			return
+		end
+		local target = ui.SearchBox.Text:gsub("^%s+", ""):gsub("%s+$", "")
+		if target == "" then
+			setStatus("Player not found", true)
 			return
 		end
 
-		sendRequest("GetPlayerData", {targetName = username}, function(packet)
+		sendRequest("GetPlayerData", { targetName = target }, function(packet)
 			if not packet.ok then
 				setStatus(packet.message or "Player not found", true)
 				return
 			end
-			local data = packet.data or {}
-			currentTarget = data.username
-			ui.NameLabel.Text = "Name: " .. tostring(data.displayName or data.username or "-")
-			ui.UserIdLabel.Text = "UserId: " .. tostring(data.userId or "-")
-			ui.CoinsLabel.Text = "Coins: " .. tostring((data.stats and data.stats.Coins) or 0)
-			ui.LevelLabel.Text = "Level: " .. tostring((data.stats and data.stats.Level) or 0)
-			setStatus("Loaded " .. tostring(currentTarget), false)
+			currentTargetName = packet.data and packet.data.username
+			fillPlayerData(packet.data or {})
+			setStatus("Loaded " .. tostring(currentTargetName), false)
 		end)
 	end)
 
-	ui.KickBtn.MouseButton1Click:Connect(function()
-		if not currentTarget then
+	ui.KickButton.MouseButton1Click:Connect(function()
+		if not currentTargetName then
 			setStatus("Search a player first", true)
 			return
 		end
-		sendRequest("KickPlayer", {targetName = currentTarget}, function(packet)
-			setStatus(packet.message or "Kick complete", not packet.ok)
+		sendRequest("KickPlayer", { targetName = currentTargetName }, function(packet)
+			setStatus(packet.message or "Kick done", not packet.ok)
 		end)
 	end)
 
-	ui.BanBtn.MouseButton1Click:Connect(function()
-		if not currentTarget then
+	ui.BanButton.MouseButton1Click:Connect(function()
+		if not currentTargetName then
 			setStatus("Search a player first", true)
 			return
 		end
-		sendRequest("BanPlayer", {targetName = currentTarget}, function(packet)
-			setStatus(packet.message or "Ban complete", not packet.ok)
+		sendRequest("BanPlayer", {
+			targetName = currentTargetName,
+			reason = "Banned by admin panel",
+			duration = 3600,
+		}, function(packet)
+			setStatus(packet.message or "Ban done", not packet.ok)
 		end)
 	end)
 
-	ui.HealBtn.MouseButton1Click:Connect(function()
-		if not currentTarget then
+	ui.HealButton.MouseButton1Click:Connect(function()
+		if not currentTargetName then
 			setStatus("Search a player first", true)
 			return
 		end
-		sendRequest("HealPlayer", {targetName = currentTarget}, function(packet)
-			setStatus(packet.message or "Heal complete", not packet.ok)
+		sendRequest("HealPlayer", { targetName = currentTargetName }, function(packet)
+			setStatus(packet.message or "Heal done", not packet.ok)
 		end)
 	end)
 
-	ui.SetTimeBtn.MouseButton1Click:Connect(function()
-		sendRequest("SetTimeOfDay", {timeString = ui.TimeBox.Text}, function(packet)
-			setStatus(packet.message or "Time changed", not packet.ok)
+	ui.TeleportButton.MouseButton1Click:Connect(function()
+		if not currentTargetName then
+			setStatus("Search a player first", true)
+			return
+		end
+		sendRequest("TeleportPlayerToMe", { targetName = currentTargetName }, function(packet)
+			setStatus(packet.message or "Teleport done", not packet.ok)
 		end)
+	end)
+
+	ui.SetTimeButton.MouseButton1Click:Connect(function()
+		sendRequest("SetTimeOfDay", { timeString = ui.TimeBox.Text }, function(packet)
+			setStatus(packet.message or "Time set", not packet.ok)
+		end)
+	end)
+
+	local opened = false
+	UserInputService.InputBegan:Connect(function(input, gameProcessed)
+		if gameProcessed then
+			return
+		end
+		if input.KeyCode == Enum.KeyCode.RightShift then
+			opened = not opened
+			mainPanel.Visible = opened
+		end
+	end)
+end
+
+sendRequest("Init", {}, function(packet)
+	if not packet.ok then
+		warn("Admin panel not available for this account: " .. tostring(packet.message))
+		return
+	end
+
+	local mainPanel = buildGui()
+	wireActions(mainPanel)
+	setStatus("Press RightShift to open panel", false)
+
+	local serverStart = (packet.data and packet.data.serverStart) or os.time()
+	task.spawn(function()
+		while mainPanel.Parent do
+			task.wait(1)
+			local elapsed = math.max(0, os.time() - serverStart)
+			local min = math.floor(elapsed / 60)
+			ui.UptimeValue.Text = string.format("%dm", min)
+			ui.PlayersValue.Text = tostring(#Players:GetPlayers())
+		end
 	end)
 end)
