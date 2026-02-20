@@ -16,15 +16,6 @@ local AdminList = {
 	[87654321] = true,
 }
 
-local AllowedPartNames = {
-	["Head"] = true,
-	["Torso"] = true,
-	["Left Arm"] = true,
-	["Right Arm"] = true,
-	["Left Leg"] = true,
-	["Right Leg"] = true,
-}
-
 local function isAdmin(player)
 	return player and AdminList[player.UserId] == true
 end
@@ -72,6 +63,14 @@ local function findPlayer(name)
 	return nil
 end
 
+local function getTarget(payload)
+	local target = findPlayer(payload and payload.targetName)
+	if not target then
+		return nil, "Player not found."
+	end
+	return target
+end
+
 local function getCharacter(target)
 	local character = target and target.Character
 	if not character then
@@ -92,23 +91,71 @@ local function getIntStat(player, statName)
 	return nil
 end
 
-local function getTarget(packet)
-	local target = findPlayer(packet.payload and packet.payload.targetName)
-	if not target then
-		return nil, "Player not found."
+local function normalizeBodyPartName(partName)
+	if type(partName) ~= "string" then
+		return nil
 	end
-	return target
+	if partName == "Head" then return "Head" end
+	if partName == "Torso" or partName == "UpperTorso" or partName == "LowerTorso" then return "Torso" end
+	if string.find(partName, "Left") and string.find(partName, "Arm") then return "Left Arm" end
+	if string.find(partName, "Right") and string.find(partName, "Arm") then return "Right Arm" end
+	if string.find(partName, "Left") and string.find(partName, "Leg") then return "Left Leg" end
+	if string.find(partName, "Right") and string.find(partName, "Leg") then return "Right Leg" end
+	if partName == "LeftHand" then return "Left Arm" end
+	if partName == "RightHand" then return "Right Arm" end
+	if partName == "LeftFoot" then return "Left Leg" end
+	if partName == "RightFoot" then return "Right Leg" end
+	return nil
 end
 
-local function getBodyPart(character, partName)
-	if type(partName) ~= "string" or not AllowedPartNames[partName] then
+local function getBodyPart(character, requestedPartName)
+	local normalized = normalizeBodyPartName(requestedPartName)
+	if not normalized then
 		return nil, "Invalid part name."
 	end
-	local part = character:FindFirstChild(partName)
-	if not part or not part:IsA("BasePart") then
-		return nil, "Part not found on target character."
+
+	if normalized == "Head" then
+		local part = character:FindFirstChild("Head")
+		if part and part:IsA("BasePart") then
+			return part
+		end
 	end
-	return part
+
+	if normalized == "Torso" then
+		local part = character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("LowerTorso")
+		if part and part:IsA("BasePart") then
+			return part
+		end
+	end
+
+	local function firstPart(names)
+		for _, n in ipairs(names) do
+			local p = character:FindFirstChild(n)
+			if p and p:IsA("BasePart") then
+				return p
+			end
+		end
+		return nil
+	end
+
+	if normalized == "Left Arm" then
+		local p = firstPart({"Left Arm", "LeftUpperArm", "LeftLowerArm", "LeftHand"})
+		if p then return p end
+	end
+	if normalized == "Right Arm" then
+		local p = firstPart({"Right Arm", "RightUpperArm", "RightLowerArm", "RightHand"})
+		if p then return p end
+	end
+	if normalized == "Left Leg" then
+		local p = firstPart({"Left Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot"})
+		if p then return p end
+	end
+	if normalized == "Right Leg" then
+		local p = firstPart({"Right Leg", "RightUpperLeg", "RightLowerLeg", "RightFoot"})
+		if p then return p end
+	end
+
+	return nil, "Part not found on target character."
 end
 
 local function handleBan(requester, targetPlayer, payload)
@@ -175,7 +222,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "GetPlayerData" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 
 		local coins = getIntStat(target, "Coins")
@@ -194,7 +241,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "HealPlayer" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local humanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
 		if not humanoid then reply(sender, requestId, false, "Humanoid not found.") return end
@@ -204,7 +251,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "KickPlayer" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		target:Kick(tostring(payload.reason or "Kicked by admin panel"))
 		reply(sender, requestId, true, "Player kicked.")
@@ -212,7 +259,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "BanPlayer" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local success, message = handleBan(sender, target, payload)
 		reply(sender, requestId, success, message)
@@ -220,7 +267,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "TeleportPlayerToMe" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local success, message = handleTeleportToAdmin(sender, target)
 		reply(sender, requestId, success, message)
@@ -228,7 +275,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "RemoveBodyPart" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local character, cErr = getCharacter(target)
 		if not character then reply(sender, requestId, false, cErr) return end
@@ -240,7 +287,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "IgniteBodyPart" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local character, cErr = getCharacter(target)
 		if not character then reply(sender, requestId, false, cErr) return end
@@ -258,7 +305,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "SetFrozen" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local character, cErr = getCharacter(target)
 		if not character then reply(sender, requestId, false, cErr) return end
@@ -270,7 +317,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "GiveForceField" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local character, cErr = getCharacter(target)
 		if not character then reply(sender, requestId, false, cErr) return end
@@ -283,7 +330,7 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "SetMovement" then
-		local target, err = getTarget(packet)
+		local target, err = getTarget(payload)
 		if not target then reply(sender, requestId, false, err) return end
 		local humanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
 		if not humanoid then reply(sender, requestId, false, "Humanoid not found.") return end

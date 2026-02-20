@@ -1,6 +1,6 @@
 --[[
 Place this LocalScript in: StarterPlayer > StarterPlayerScripts
-Builds a light frosted-glass Admin Panel entirely with Instance.new().
+Auto-generates a light frosted admin panel with mobile support + 3D character viewport.
 ]]
 
 local Players = game:GetService("Players")
@@ -10,7 +10,6 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 
 local localPlayer = Players.LocalPlayer
-
 local remotes = ReplicatedStorage:WaitForChild("AdminRemotes")
 local requestRemote = remotes:WaitForChild("AdminRequest")
 local responseRemote = remotes:WaitForChild("AdminResponse")
@@ -30,7 +29,24 @@ local ui = {}
 local pendingCallbacks = {}
 local requestId = 0
 local currentTargetName = nil
+local currentTargetUserId = nil
 local selectedBodyPart = nil
+
+local viewportState = {
+	model = nil,
+	camera = nil,
+	yaw = 0,
+	pitch = -8,
+	distance = 7,
+	targetY = 2.6,
+	highlightPart = nil,
+	baseColor = nil,
+	rotating = false,
+	rotateInput = nil,
+	rotateStart = nil,
+	yawStart = 0,
+	pitchStart = 0,
+}
 
 local function addRound(instance, radius)
 	local corner = Instance.new("UICorner")
@@ -69,6 +85,7 @@ local function makeLabel(parent, name, text, size, position, textSize, color, bo
 	label.Text = text
 	label.TextColor3 = color or Colors.Text
 	label.TextSize = textSize or 14
+	label.TextScaled = false
 	label.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.Parent = parent
@@ -85,6 +102,7 @@ local function makeButton(parent, name, text, size, position, bgColor, textColor
 	button.Text = text
 	button.Font = Enum.Font.GothamSemibold
 	button.TextSize = 14
+	button.TextScaled = false
 	button.AutoButtonColor = false
 	button.BorderSizePixel = 0
 	button.Parent = parent
@@ -106,6 +124,7 @@ local function makeTextBox(parent, name, placeholder, size, position)
 	box.ClearTextOnFocus = false
 	box.Font = Enum.Font.Gotham
 	box.TextSize = 14
+	box.TextScaled = false
 	box.BorderSizePixel = 0
 	box.Parent = parent
 	addRound(box, 6)
@@ -113,6 +132,9 @@ local function makeTextBox(parent, name, placeholder, size, position)
 end
 
 local function setStatus(text, isError)
+	if not ui.StatusLabel then
+		return
+	end
 	ui.StatusLabel.Text = text
 	ui.StatusLabel.TextColor3 = isError and Colors.Error or Colors.Text
 end
@@ -157,16 +179,152 @@ local function selectTab(tabName)
 	end
 end
 
-local function refreshDummyHighlights()
-	for partName, btn in pairs(ui.DummyPartButtons or {}) do
-		if partName == selectedBodyPart then
-			btn.BackgroundColor3 = Colors.Blue
-			btn.TextColor3 = Colors.White
-		else
-			btn.BackgroundColor3 = Colors.PanelSoft
-			btn.TextColor3 = Colors.Text
+local function mapPartNameForActions(partName)
+	if not partName then
+		return nil
+	end
+	if partName == "Head" then return "Head" end
+	if partName == "Torso" or partName == "UpperTorso" or partName == "LowerTorso" then return "Torso" end
+	if string.find(partName, "Left") and string.find(partName, "Arm") then return "Left Arm" end
+	if string.find(partName, "Right") and string.find(partName, "Arm") then return "Right Arm" end
+	if string.find(partName, "Left") and string.find(partName, "Leg") then return "Left Leg" end
+	if string.find(partName, "Right") and string.find(partName, "Leg") then return "Right Leg" end
+	if partName == "LeftHand" then return "Left Arm" end
+	if partName == "RightHand" then return "Right Arm" end
+	if partName == "LeftFoot" then return "Left Leg" end
+	if partName == "RightFoot" then return "Right Leg" end
+	return nil
+end
+
+local function clearViewportHighlight()
+	if viewportState.highlightPart and viewportState.highlightPart.Parent and viewportState.baseColor then
+		viewportState.highlightPart.Color = viewportState.baseColor
+	end
+	viewportState.highlightPart = nil
+	viewportState.baseColor = nil
+end
+
+local function updateViewportCamera()
+	if not viewportState.camera then
+		return
+	end
+	local yaw = math.rad(viewportState.yaw)
+	local pitch = math.rad(viewportState.pitch)
+	local lookAt = Vector3.new(0, viewportState.targetY, 0)
+	local x = math.cos(pitch) * math.sin(yaw)
+	local y = math.sin(pitch)
+	local z = math.cos(pitch) * math.cos(yaw)
+	local camPos = lookAt + Vector3.new(x, y, z) * viewportState.distance
+	viewportState.camera.CFrame = CFrame.lookAt(camPos, lookAt)
+end
+
+local function buildFallbackDummy()
+	local model = Instance.new("Model")
+	model.Name = "ViewportDummy"
+
+	local function part(name, size, cframe)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Anchored = true
+		p.CanCollide = false
+		p.Color = Color3.fromRGB(201, 210, 224)
+		p.Material = Enum.Material.SmoothPlastic
+		p.Size = size
+		p.CFrame = cframe
+		p.Parent = model
+		return p
+	end
+
+	part("Head", Vector3.new(2, 1, 1), CFrame.new(0, 5, 0))
+	part("Torso", Vector3.new(2, 2, 1), CFrame.new(0, 3.5, 0))
+	part("Left Arm", Vector3.new(1, 2, 1), CFrame.new(-1.5, 3.5, 0))
+	part("Right Arm", Vector3.new(1, 2, 1), CFrame.new(1.5, 3.5, 0))
+	part("Left Leg", Vector3.new(1, 2, 1), CFrame.new(-0.5, 1.5, 0))
+	part("Right Leg", Vector3.new(1, 2, 1), CFrame.new(0.5, 1.5, 0))
+
+	return model
+end
+
+local function loadCharacterInViewport(targetPlayer)
+	if not ui.WorldModel then
+		return
+	end
+
+	clearViewportHighlight()
+	selectedBodyPart = nil
+
+	for _, child in ipairs(ui.WorldModel:GetChildren()) do
+		child:Destroy()
+	end
+
+	local modelToUse = nil
+	if targetPlayer and targetPlayer.Character then
+		local char = targetPlayer.Character
+		local oldArchivable = char.Archivable
+		char.Archivable = true
+		local ok, clone = pcall(function()
+			return char:Clone()
+		end)
+		char.Archivable = oldArchivable
+		if ok and clone then
+			for _, desc in ipairs(clone:GetDescendants()) do
+				if desc:IsA("Script") or desc:IsA("LocalScript") then
+					desc:Destroy()
+				elseif desc:IsA("BasePart") then
+					desc.Anchored = true
+					desc.CanCollide = false
+				elseif desc:IsA("Humanoid") then
+					desc.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				end
+			end
+			modelToUse = clone
 		end
 	end
+
+	if not modelToUse then
+		modelToUse = buildFallbackDummy()
+	end
+
+	modelToUse.Parent = ui.WorldModel
+	viewportState.model = modelToUse
+	viewportState.yaw = 0
+	viewportState.pitch = -8
+	viewportState.distance = 7
+	updateViewportCamera()
+end
+
+local function trySelectPartFromViewport(screenPoint)
+	if not ui.ViewportFrame or not viewportState.camera or not ui.WorldModel then
+		return
+	end
+
+	local absPos = ui.ViewportFrame.AbsolutePosition
+	local rel = screenPoint - absPos
+	local ray = viewportState.camera:ViewportPointToRay(rel.X, rel.Y)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { ui.WorldModel }
+	params.IgnoreWater = true
+
+	local ok, result = pcall(function()
+		return ui.WorldModel:Raycast(ray.Origin, ray.Direction * 500, params)
+	end)
+
+	if not ok or not result or not result.Instance or not result.Instance:IsA("BasePart") then
+		return
+	end
+
+	local mapped = mapPartNameForActions(result.Instance.Name)
+	if not mapped then
+		return
+	end
+
+	clearViewportHighlight()
+	viewportState.highlightPart = result.Instance
+	viewportState.baseColor = result.Instance.Color
+	result.Instance.Color = Colors.Blue
+	selectedBodyPart = mapped
+	setStatus("Selected part: " .. mapped, false)
 end
 
 local function fillPlayerData(data)
@@ -188,37 +346,41 @@ local function fillPlayerData(data)
 	end
 end
 
-local function setupSmoothDrag(dragHandle, panel)
+local function setupSmoothPanelDrag(dragHandle, panel)
 	local dragging = false
+	local dragInput
 	local dragStart = Vector2.zero
 	local panelStart = Vector2.zero
 	local targetPos = panel.Position
 	local lerpAlpha = 0.22
 
 	dragHandle.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 			dragging = true
-			dragStart = UserInputService:GetMouseLocation()
+			dragInput = input
+			dragStart = input.Position
 			panelStart = Vector2.new(panel.Position.X.Scale, panel.Position.Y.Scale)
 		end
 	end)
 
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input == dragInput then
+			local delta = input.Position - dragStart
+			local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
+			local dx = delta.X / viewport.X
+			local dy = delta.Y / viewport.Y
+			targetPos = UDim2.fromScale(panelStart.X + dx, panelStart.Y + dy)
+		end
+	end)
+
 	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		if input == dragInput then
 			dragging = false
+			dragInput = nil
 		end
 	end)
 
 	RunService.RenderStepped:Connect(function()
-		if dragging then
-			local now = UserInputService:GetMouseLocation()
-			local delta = now - dragStart
-			local viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1920, 1080)
-			local dxScale = delta.X / viewport.X
-			local dyScale = delta.Y / viewport.Y
-			targetPos = UDim2.fromScale(panelStart.X + dxScale, panelStart.Y + dyScale)
-		end
-
 		local current = panel.Position
 		local newX = current.X.Scale + (targetPos.X.Scale - current.X.Scale) * lerpAlpha
 		local newY = current.Y.Scale + (targetPos.Y.Scale - current.Y.Scale) * lerpAlpha
@@ -226,36 +388,51 @@ local function setupSmoothDrag(dragHandle, panel)
 	end)
 end
 
-local function buildCharacterDummy(parent)
-	local dummyContainer = makeFrame(parent, "DummyContainer", UDim2.new(0, 220, 0, 250), UDim2.new(0, 8, 0, 8), Colors.PanelSoft, 0.15, 6)
-	makeLabel(dummyContainer, "DummyTitle", "Body Selector", UDim2.new(1, -12, 0, 22), UDim2.new(0, 8, 0, 6), 14, Colors.Text, true)
-
-	local partsHolder = Instance.new("Frame")
-	partsHolder.BackgroundTransparency = 1
-	partsHolder.Size = UDim2.new(1, -16, 1, -40)
-	partsHolder.Position = UDim2.new(0, 8, 0, 30)
-	partsHolder.Parent = dummyContainer
-
-	ui.DummyPartButtons = {}
-	local function mk(name, text, size, pos)
-		local b = makeButton(partsHolder, name, text, size, pos, Colors.PanelSoft, Colors.Text)
-		b.TextScaled = true
-		ui.DummyPartButtons[text] = b
-		b.MouseButton1Click:Connect(function()
-			selectedBodyPart = text
-			refreshDummyHighlights()
-			setStatus("Selected part: " .. text, false)
-		end)
+local function setupViewportInteraction()
+	local vp = ui.ViewportFrame
+	if not vp then
+		return
 	end
 
-	mk("Head", "Head", UDim2.new(0, 52, 0, 40), UDim2.new(0.5, -26, 0, 0))
-	mk("Torso", "Torso", UDim2.new(0, 62, 0, 70), UDim2.new(0.5, -31, 0, 44))
-	mk("LeftArm", "Left Arm", UDim2.new(0, 52, 0, 60), UDim2.new(0.5, -90, 0, 48))
-	mk("RightArm", "Right Arm", UDim2.new(0, 52, 0, 60), UDim2.new(0.5, 38, 0, 48))
-	mk("LeftLeg", "Left Leg", UDim2.new(0, 52, 0, 74), UDim2.new(0.5, -58, 0, 118))
-	mk("RightLeg", "Right Leg", UDim2.new(0, 52, 0, 74), UDim2.new(0.5, 6, 0, 118))
+	local rotating = false
+	local rotateInput
+	local rotateStart = Vector2.zero
+	local startYaw = 0
+	local startPitch = 0
+	local moved = false
 
-	refreshDummyHighlights()
+	vp.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			rotating = true
+			rotateInput = input
+			rotateStart = input.Position
+			startYaw = viewportState.yaw
+			startPitch = viewportState.pitch
+			moved = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if rotating and input == rotateInput then
+			local delta = input.Position - rotateStart
+			if delta.Magnitude > 4 then
+				moved = true
+			end
+			viewportState.yaw = startYaw - (delta.X * 0.35)
+			viewportState.pitch = math.clamp(startPitch - (delta.Y * 0.2), -35, 35)
+			updateViewportCamera()
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if rotating and input == rotateInput then
+			rotating = false
+			if not moved then
+				trySelectPartFromViewport(input.Position)
+			end
+			rotateInput = nil
+		end
+	end)
 end
 
 local function buildGui()
@@ -266,48 +443,62 @@ local function buildGui()
 	screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	screen.Parent = localPlayer:WaitForChild("PlayerGui")
 
-	local panel = makeFrame(screen, "MainPanel", UDim2.fromScale(0.78, 0.74), UDim2.fromScale(0.11, 0.13), Colors.Panel, 0.2, 6)
+	ui.ToggleButton = makeButton(screen, "MobileToggle", "Admin", UDim2.fromScale(0.11, 0.05), UDim2.fromScale(0.015, 0.03), Colors.Blue, Colors.White)
+	ui.ToggleButton.TextScaled = true
+
+	local panel = makeFrame(screen, "MainPanel", UDim2.fromScale(0.82, 0.8), UDim2.fromScale(0.09, 0.1), Colors.Panel, 0.2, 6)
 	addStroke(panel, Color3.fromRGB(200, 210, 225), 0.2)
 	panel.Visible = false
 	ui.MainPanel = panel
 
-	local topBar = makeFrame(panel, "TopBar", UDim2.new(1, -16, 0, 56), UDim2.new(0, 8, 0, 8), Colors.PanelAlt, 0.15, 6)
+	local panelAspect = Instance.new("UIAspectRatioConstraint")
+	panelAspect.AspectRatio = 1.75
+	panelAspect.Parent = panel
+
+	local panelSizeLimit = Instance.new("UISizeConstraint")
+	panelSizeLimit.MinSize = Vector2.new(700, 420)
+	panelSizeLimit.MaxSize = Vector2.new(1600, 980)
+	panelSizeLimit.Parent = panel
+
+	local topBar = makeFrame(panel, "TopBar", UDim2.fromScale(0.98, 0.1), UDim2.fromScale(0.01, 0.01), Colors.PanelAlt, 0.15, 6)
 	addStroke(topBar, Color3.fromRGB(210, 220, 235), 0.3)
 
-	local stat1 = makeLabel(topBar, "UptimeTitle", "Server up-time:", UDim2.new(0, 130, 1, 0), UDim2.new(0, 12, 0, 0), 14, Colors.Text, true)
+	local stat1 = makeLabel(topBar, "UptimeTitle", "Server up-time:", UDim2.fromScale(0.17, 1), UDim2.fromScale(0.015, 0), 14, Colors.Text, true)
 	stat1.TextYAlignment = Enum.TextYAlignment.Center
-	ui.UptimeValue = makeLabel(topBar, "UptimeValue", "0m", UDim2.new(0, 120, 1, 0), UDim2.new(0, 148, 0, 0), 14, Colors.Text, true)
+	ui.UptimeValue = makeLabel(topBar, "UptimeValue", "0m", UDim2.fromScale(0.1, 1), UDim2.fromScale(0.19, 0), 14, Colors.Text, true)
 	ui.UptimeValue.TextYAlignment = Enum.TextYAlignment.Center
-	local stat2 = makeLabel(topBar, "PlayersTitle", "Players:", UDim2.new(0, 80, 1, 0), UDim2.new(0, 300, 0, 0), 14, Colors.Text, true)
+	local stat2 = makeLabel(topBar, "PlayersTitle", "Players:", UDim2.fromScale(0.1, 1), UDim2.fromScale(0.42, 0), 14, Colors.Text, true)
 	stat2.TextYAlignment = Enum.TextYAlignment.Center
-	ui.PlayersValue = makeLabel(topBar, "PlayersValue", "0", UDim2.new(0, 70, 1, 0), UDim2.new(0, 380, 0, 0), 14, Colors.Text, true)
+	ui.PlayersValue = makeLabel(topBar, "PlayersValue", "0", UDim2.fromScale(0.08, 1), UDim2.fromScale(0.52, 0), 14, Colors.Text, true)
 	ui.PlayersValue.TextYAlignment = Enum.TextYAlignment.Center
 
-	local sidebar = makeFrame(panel, "Sidebar", UDim2.new(0, 190, 1, -96), UDim2.new(0, 8, 0, 70), Colors.PanelAlt, 0.1, 6)
+	local sidebar = makeFrame(panel, "Sidebar", UDim2.fromScale(0.21, 0.86), UDim2.fromScale(0.01, 0.125), Colors.PanelAlt, 0.1, 6)
 	addStroke(sidebar, Color3.fromRGB(210, 220, 235), 0.3)
-	local profile = makeFrame(sidebar, "Profile", UDim2.new(1, -12, 0, 60), UDim2.new(0, 6, 0, 6), Colors.PanelSoft, 0.15, 6)
-	makeLabel(profile, "UserName", localPlayer.DisplayName, UDim2.new(1, -12, 0, 22), UDim2.new(0, 8, 0, 6), 15, Colors.Text, true)
-	makeLabel(profile, "AtUser", "@" .. localPlayer.Name, UDim2.new(1, -12, 0, 18), UDim2.new(0, 8, 0, 30), 13, Colors.TextSoft, false)
+	local profile = makeFrame(sidebar, "Profile", UDim2.fromScale(0.96, 0.1), UDim2.fromScale(0.02, 0.01), Colors.PanelSoft, 0.15, 6)
+	makeLabel(profile, "UserName", localPlayer.DisplayName, UDim2.fromScale(0.95, 0.44), UDim2.fromScale(0.03, 0.08), 15, Colors.Text, true)
+	makeLabel(profile, "AtUser", "@" .. localPlayer.Name, UDim2.fromScale(0.95, 0.3), UDim2.fromScale(0.03, 0.56), 13, Colors.TextSoft, false)
 
 	local navHolder = Instance.new("Frame")
 	navHolder.Name = "NavHolder"
 	navHolder.BackgroundTransparency = 1
-	navHolder.Size = UDim2.new(1, -12, 1, -78)
-	navHolder.Position = UDim2.new(0, 6, 0, 72)
+	navHolder.Size = UDim2.fromScale(0.96, 0.86)
+	navHolder.Position = UDim2.fromScale(0.02, 0.125)
 	navHolder.Parent = sidebar
+
 	local navLayout = Instance.new("UIListLayout")
-	navLayout.Padding = UDim.new(0, 8)
+	navLayout.Padding = UDim.new(0.016, 0)
+	navLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	navLayout.Parent = navHolder
 
-	local content = makeFrame(panel, "Content", UDim2.new(1, -206, 1, -96), UDim2.new(0, 198, 0, 70), Colors.PanelAlt, 0.1, 6)
+	local content = makeFrame(panel, "Content", UDim2.fromScale(0.76, 0.86), UDim2.fromScale(0.23, 0.125), Colors.PanelAlt, 0.1, 6)
 	addStroke(content, Color3.fromRGB(210, 220, 235), 0.3)
-	ui.StatusLabel = makeLabel(panel, "StatusLabel", "Ready", UDim2.new(1, -16, 0, 22), UDim2.new(0, 10, 1, -26), 14, Colors.Text, true)
+	ui.StatusLabel = makeLabel(panel, "StatusLabel", "Ready", UDim2.fromScale(0.98, 0.03), UDim2.fromScale(0.01, 0.965), 14, Colors.Text, true)
 
 	local dataPage = Instance.new("Frame")
 	dataPage.Name = "DataPage"
 	dataPage.BackgroundTransparency = 1
-	dataPage.Size = UDim2.new(1, -12, 1, -12)
-	dataPage.Position = UDim2.new(0, 6, 0, 6)
+	dataPage.Size = UDim2.fromScale(0.98, 0.98)
+	dataPage.Position = UDim2.fromScale(0.01, 0.01)
 	dataPage.Parent = content
 
 	local characterPage = dataPage:Clone(); characterPage.Name = "CharacterPage"; characterPage.Parent = content; characterPage.Visible = false
@@ -317,53 +508,80 @@ local function buildGui()
 	ui.Pages = { Data = dataPage, Character = characterPage, World = worldPage, Tools = toolsPage }
 	ui.NavButtons = {}
 	for _, tabName in ipairs({ "Data", "Character", "World", "Tools" }) do
-		local b = makeButton(navHolder, tabName .. "Btn", tabName, UDim2.new(1, 0, 0, 38), UDim2.new(), Colors.PanelSoft, Colors.Text)
+		local b = makeButton(navHolder, tabName .. "Btn", tabName, UDim2.fromScale(0.98, 0.1), UDim2.fromScale(0, 0), Colors.PanelSoft, Colors.Text)
 		ui.NavButtons[tabName] = b
 		b.MouseButton1Click:Connect(function() selectTab(tabName) end)
 	end
 
-	ui.SearchBox = makeTextBox(dataPage, "SearchBox", "Username...", UDim2.new(1, -16, 0, 36), UDim2.new(0, 8, 0, 8))
-	local account = makeFrame(dataPage, "AccountSection", UDim2.new(1, -16, 0, 118), UDim2.new(0, 8, 0, 54), Colors.PanelSoft, 0.15, 6)
-	makeLabel(account, "AccountTitle", "Account info", UDim2.new(1, -74, 0, 24), UDim2.new(0, 8, 0, 6), 18, Colors.Text, true)
+	ui.SearchBox = makeTextBox(dataPage, "SearchBox", "Username...", UDim2.fromScale(0.98, 0.09), UDim2.fromScale(0.01, 0.01))
+	local account = makeFrame(dataPage, "AccountSection", UDim2.fromScale(0.98, 0.34), UDim2.fromScale(0.01, 0.12), Colors.PanelSoft, 0.15, 6)
+	makeLabel(account, "AccountTitle", "Account info", UDim2.fromScale(0.8, 0.2), UDim2.fromScale(0.02, 0.05), 18, Colors.Text, true)
+
 	ui.ProfileImage = Instance.new("ImageLabel")
 	ui.ProfileImage.Name = "ProfileImage"
-	ui.ProfileImage.Size = UDim2.new(0, 52, 0, 52)
-	ui.ProfileImage.Position = UDim2.new(1, -60, 0, 6)
+	ui.ProfileImage.Size = UDim2.fromScale(0.14, 0.44)
+	ui.ProfileImage.Position = UDim2.fromScale(0.84, 0.05)
 	ui.ProfileImage.BackgroundColor3 = Colors.Panel
 	ui.ProfileImage.BackgroundTransparency = 0.1
 	ui.ProfileImage.BorderSizePixel = 0
 	ui.ProfileImage.Parent = account
 	addRound(ui.ProfileImage, 6)
-	ui.AccountName = makeLabel(account, "AccountName", "Name: -", UDim2.new(1, -74, 0, 20), UDim2.new(0, 8, 0, 35), 14, Colors.TextSoft, false)
-	ui.AccountUserId = makeLabel(account, "AccountUserId", "UserId: -", UDim2.new(1, -74, 0, 20), UDim2.new(0, 8, 0, 58), 14, Colors.TextSoft, false)
-	ui.AccountRole = makeLabel(account, "AccountRole", "Role: -", UDim2.new(1, -74, 0, 20), UDim2.new(0, 8, 0, 81), 14, Colors.TextSoft, false)
 
-	local dataSection = makeFrame(dataPage, "DataSection", UDim2.new(1, -16, 0, 90), UDim2.new(0, 8, 0, 178), Colors.PanelSoft, 0.15, 6)
-	makeLabel(dataSection, "DataTitle", "Data", UDim2.new(1, -12, 0, 24), UDim2.new(0, 8, 0, 6), 18, Colors.Text, true)
-	ui.DataCoins = makeLabel(dataSection, "Coins", "Coins: -", UDim2.new(0.5, -8, 0, 20), UDim2.new(0, 8, 0, 38), 14, Colors.TextSoft, false)
-	ui.DataLevel = makeLabel(dataSection, "Level", "Level: -", UDim2.new(0.5, -8, 0, 20), UDim2.new(0.5, 0, 0, 38), 14, Colors.TextSoft, false)
+	ui.AccountName = makeLabel(account, "AccountName", "Name: -", UDim2.fromScale(0.8, 0.17), UDim2.fromScale(0.02, 0.32), 14, Colors.TextSoft, false)
+	ui.AccountUserId = makeLabel(account, "AccountUserId", "UserId: -", UDim2.fromScale(0.8, 0.17), UDim2.fromScale(0.02, 0.54), 14, Colors.TextSoft, false)
+	ui.AccountRole = makeLabel(account, "AccountRole", "Role: -", UDim2.fromScale(0.8, 0.17), UDim2.fromScale(0.02, 0.76), 14, Colors.TextSoft, false)
 
-	buildCharacterDummy(characterPage)
-	ui.RemovePartButton = makeButton(characterPage, "RemovePartButton", "Remove Part", UDim2.new(0, 130, 0, 34), UDim2.new(0, 240, 0, 12), Colors.Blue, Colors.White)
-	ui.IgnitePartButton = makeButton(characterPage, "IgnitePartButton", "Ignite Part", UDim2.new(0, 130, 0, 34), UDim2.new(0, 376, 0, 12), Colors.Blue, Colors.White)
-	ui.FreezeButton = makeButton(characterPage, "FreezeButton", "Freeze", UDim2.new(0, 120, 0, 34), UDim2.new(0, 240, 0, 56), Colors.Blue, Colors.White)
-	ui.ThawButton = makeButton(characterPage, "ThawButton", "Thaw", UDim2.new(0, 120, 0, 34), UDim2.new(0, 366, 0, 56), Colors.Blue, Colors.White)
-	ui.ForceFieldButton = makeButton(characterPage, "ForceFieldButton", "ForceField", UDim2.new(0, 246, 0, 34), UDim2.new(0, 240, 0, 100), Colors.Blue, Colors.White)
-	ui.WalkSpeedBox = makeTextBox(characterPage, "WalkSpeedBox", "WalkSpeed", UDim2.new(0, 120, 0, 34), UDim2.new(0, 240, 0, 146))
-	ui.JumpPowerBox = makeTextBox(characterPage, "JumpPowerBox", "JumpPower", UDim2.new(0, 120, 0, 34), UDim2.new(0, 366, 0, 146))
-	ui.ApplyStatsButton = makeButton(characterPage, "ApplyStatsButton", "Apply Stats", UDim2.new(0, 246, 0, 34), UDim2.new(0, 240, 0, 190), Colors.Blue, Colors.White)
-	ui.KickButton = makeButton(characterPage, "KickButton", "Kick", UDim2.new(0, 120, 0, 34), UDim2.new(0, 240, 0, 234), Colors.Blue, Colors.White)
-	ui.BanButton = makeButton(characterPage, "BanButton", "Ban", UDim2.new(0, 120, 0, 34), UDim2.new(0, 366, 0, 234), Colors.Blue, Colors.White)
-	ui.HealButton = makeButton(characterPage, "HealButton", "Heal", UDim2.new(0, 120, 0, 34), UDim2.new(0, 240, 0, 274), Colors.Blue, Colors.White)
-	ui.TeleportButton = makeButton(characterPage, "TeleportButton", "Bring", UDim2.new(0, 120, 0, 34), UDim2.new(0, 366, 0, 274), Colors.Blue, Colors.White)
+	local dataSection = makeFrame(dataPage, "DataSection", UDim2.fromScale(0.98, 0.24), UDim2.fromScale(0.01, 0.48), Colors.PanelSoft, 0.15, 6)
+	makeLabel(dataSection, "DataTitle", "Data", UDim2.fromScale(0.5, 0.24), UDim2.fromScale(0.02, 0.05), 18, Colors.Text, true)
+	ui.DataCoins = makeLabel(dataSection, "Coins", "Coins: -", UDim2.fromScale(0.47, 0.24), UDim2.fromScale(0.02, 0.44), 14, Colors.TextSoft, false)
+	ui.DataLevel = makeLabel(dataSection, "Level", "Level: -", UDim2.fromScale(0.47, 0.24), UDim2.fromScale(0.5, 0.44), 14, Colors.TextSoft, false)
 
-	ui.TimeBox = makeTextBox(worldPage, "TimeBox", "HH:MM:SS", UDim2.new(0, 180, 0, 36), UDim2.new(0, 8, 0, 8))
+	local viewportWrap = makeFrame(characterPage, "ViewportWrap", UDim2.fromScale(0.45, 0.7), UDim2.fromScale(0.01, 0.02), Colors.PanelSoft, 0.1, 6)
+	makeLabel(viewportWrap, "ViewportTitle", "3D Body Selector", UDim2.fromScale(0.96, 0.1), UDim2.fromScale(0.02, 0.01), 14, Colors.Text, true)
+
+	ui.ViewportFrame = Instance.new("ViewportFrame")
+	ui.ViewportFrame.Name = "CharacterViewport"
+	ui.ViewportFrame.Size = UDim2.fromScale(0.96, 0.87)
+	ui.ViewportFrame.Position = UDim2.fromScale(0.02, 0.11)
+	ui.ViewportFrame.BackgroundColor3 = Colors.Panel
+	ui.ViewportFrame.BackgroundTransparency = 0.15
+	ui.ViewportFrame.BorderSizePixel = 0
+	ui.ViewportFrame.LightDirection = Vector3.new(-1, -2, -1)
+	ui.ViewportFrame.Ambient = Color3.fromRGB(180, 185, 200)
+	ui.ViewportFrame.Parent = viewportWrap
+	addRound(ui.ViewportFrame, 6)
+
+	ui.WorldModel = Instance.new("WorldModel")
+	ui.WorldModel.Parent = ui.ViewportFrame
+	local cam = Instance.new("Camera")
+	cam.Parent = ui.ViewportFrame
+	ui.ViewportFrame.CurrentCamera = cam
+	viewportState.camera = cam
+
+	local actionPane = makeFrame(characterPage, "ActionPane", UDim2.fromScale(0.53, 0.7), UDim2.fromScale(0.46, 0.02), Colors.PanelSoft, 0.1, 6)
+	ui.RemovePartButton = makeButton(actionPane, "RemovePartButton", "Remove Part", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.02, 0.02), Colors.Blue, Colors.White)
+	ui.IgnitePartButton = makeButton(actionPane, "IgnitePartButton", "Ignite Part", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.5, 0.02), Colors.Blue, Colors.White)
+	ui.FreezeButton = makeButton(actionPane, "FreezeButton", "Freeze", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.02, 0.15), Colors.Blue, Colors.White)
+	ui.ThawButton = makeButton(actionPane, "ThawButton", "Thaw", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.5, 0.15), Colors.Blue, Colors.White)
+	ui.ForceFieldButton = makeButton(actionPane, "ForceFieldButton", "ForceField", UDim2.fromScale(0.96, 0.1), UDim2.fromScale(0.02, 0.28), Colors.Blue, Colors.White)
+	ui.WalkSpeedBox = makeTextBox(actionPane, "WalkSpeedBox", "WalkSpeed", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.02, 0.41))
+	ui.JumpPowerBox = makeTextBox(actionPane, "JumpPowerBox", "JumpPower", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.5, 0.41))
+	ui.ApplyStatsButton = makeButton(actionPane, "ApplyStatsButton", "Apply Stats", UDim2.fromScale(0.96, 0.1), UDim2.fromScale(0.02, 0.54), Colors.Blue, Colors.White)
+	ui.KickButton = makeButton(actionPane, "KickButton", "Kick", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.02, 0.67), Colors.Blue, Colors.White)
+	ui.BanButton = makeButton(actionPane, "BanButton", "Ban", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.5, 0.67), Colors.Blue, Colors.White)
+	ui.HealButton = makeButton(actionPane, "HealButton", "Heal", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.02, 0.8), Colors.Blue, Colors.White)
+	ui.TeleportButton = makeButton(actionPane, "TeleportButton", "Bring", UDim2.fromScale(0.48, 0.1), UDim2.fromScale(0.5, 0.8), Colors.Blue, Colors.White)
+
+	ui.TimeBox = makeTextBox(worldPage, "TimeBox", "HH:MM:SS", UDim2.fromScale(0.27, 0.09), UDim2.fromScale(0.01, 0.02))
 	ui.TimeBox.Text = "14:00:00"
-	ui.SetTimeButton = makeButton(worldPage, "SetTimeButton", "Set Time", UDim2.new(0, 120, 0, 36), UDim2.new(0, 196, 0, 8), Colors.Blue, Colors.White)
-	makeLabel(toolsPage, "ToolsLabel", "Tools tab ready for your custom actions.", UDim2.new(1, -16, 0, 24), UDim2.new(0, 8, 0, 8), 14, Colors.TextSoft, false)
+	ui.SetTimeButton = makeButton(worldPage, "SetTimeButton", "Set Time", UDim2.fromScale(0.2, 0.09), UDim2.fromScale(0.29, 0.02), Colors.Blue, Colors.White)
+	makeLabel(toolsPage, "ToolsLabel", "Tools tab ready for your custom actions.", UDim2.fromScale(0.98, 0.08), UDim2.fromScale(0.01, 0.02), 14, Colors.TextSoft, false)
 
-	setupSmoothDrag(topBar, panel)
+	setupSmoothPanelDrag(topBar, panel)
+	setupViewportInteraction()
+	loadCharacterInViewport(nil)
 	selectTab("Data")
+
 	return panel
 end
 
@@ -384,16 +602,20 @@ local function wireActions(mainPanel)
 		sendRequest("GetPlayerData", { targetName = target }, function(packet)
 			if not packet.ok then setStatus(packet.message or "Player not found", true) return end
 			currentTargetName = packet.data and packet.data.username
+			currentTargetUserId = packet.data and packet.data.userId
 			selectedBodyPart = nil
-			refreshDummyHighlights()
+			clearViewportHighlight()
 			fillPlayerData(packet.data or {})
+
+			local targetPlayer = Players:FindFirstChild(currentTargetName)
+			loadCharacterInViewport(targetPlayer)
 			setStatus("Loaded " .. tostring(currentTargetName), false)
 		end)
 	end)
 
 	ui.RemovePartButton.MouseButton1Click:Connect(function()
 		if not requireTarget() then return end
-		if not selectedBodyPart then setStatus("Select a body part first", true) return end
+		if not selectedBodyPart then setStatus("Select a body part in the 3D viewport", true) return end
 		sendRequest("RemoveBodyPart", { targetName = currentTargetName, partName = selectedBodyPart }, function(packet)
 			setStatus(packet.message or "Remove part complete", not packet.ok)
 		end)
@@ -401,7 +623,7 @@ local function wireActions(mainPanel)
 
 	ui.IgnitePartButton.MouseButton1Click:Connect(function()
 		if not requireTarget() then return end
-		if not selectedBodyPart then setStatus("Select a body part first", true) return end
+		if not selectedBodyPart then setStatus("Select a body part in the 3D viewport", true) return end
 		sendRequest("IgniteBodyPart", { targetName = currentTargetName, partName = selectedBodyPart }, function(packet)
 			setStatus(packet.message or "Ignite complete", not packet.ok)
 		end)
@@ -473,11 +695,17 @@ local function wireActions(mainPanel)
 	end)
 
 	local opened = false
+	local function togglePanel()
+		opened = not opened
+		mainPanel.Visible = opened
+	end
+
+	ui.ToggleButton.MouseButton1Click:Connect(togglePanel)
+
 	UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then return end
 		if input.KeyCode == Enum.KeyCode.RightShift then
-			opened = not opened
-			mainPanel.Visible = opened
+			togglePanel()
 		end
 	end)
 end
@@ -490,7 +718,7 @@ sendRequest("Init", {}, function(packet)
 
 	local mainPanel = buildGui()
 	wireActions(mainPanel)
-	setStatus("Press RightShift to open panel", false)
+	setStatus("Press RightShift or tap Admin button", false)
 
 	local serverStart = (packet.data and packet.data.serverStart) or os.time()
 	task.spawn(function()
