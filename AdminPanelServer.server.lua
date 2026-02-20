@@ -6,6 +6,7 @@ Creates remotes, validates AdminList, and executes secure admin commands.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
+local Debris = game:GetService("Debris")
 
 local serverStart = os.time()
 
@@ -13,6 +14,15 @@ local serverStart = os.time()
 local AdminList = {
 	[12345678] = true,
 	[87654321] = true,
+}
+
+local AllowedPartNames = {
+	["Head"] = true,
+	["Torso"] = true,
+	["Left Arm"] = true,
+	["Right Arm"] = true,
+	["Left Leg"] = true,
+	["Right Leg"] = true,
 }
 
 local function isAdmin(player)
@@ -62,6 +72,14 @@ local function findPlayer(name)
 	return nil
 end
 
+local function getCharacter(target)
+	local character = target and target.Character
+	if not character then
+		return nil, "Character not loaded."
+	end
+	return character
+end
+
 local function getIntStat(player, statName)
 	local leaderstats = player:FindFirstChild("leaderstats")
 	if not leaderstats then
@@ -72,6 +90,25 @@ local function getIntStat(player, statName)
 		return stat
 	end
 	return nil
+end
+
+local function getTarget(packet)
+	local target = findPlayer(packet.payload and packet.payload.targetName)
+	if not target then
+		return nil, "Player not found."
+	end
+	return target
+end
+
+local function getBodyPart(character, partName)
+	if type(partName) ~= "string" or not AllowedPartNames[partName] then
+		return nil, "Invalid part name."
+	end
+	local part = character:FindFirstChild(partName)
+	if not part or not part:IsA("BasePart") then
+		return nil, "Part not found on target character."
+	end
+	return part
 end
 
 local function handleBan(requester, targetPlayer, payload)
@@ -138,11 +175,8 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "GetPlayerData" then
-		local target = findPlayer(payload.targetName)
-		if not target then
-			reply(sender, requestId, false, "Player not found.")
-			return
-		end
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
 
 		local coins = getIntStat(target, "Coins")
 		local level = getIntStat(target, "Level")
@@ -160,52 +194,106 @@ adminRequest.OnServerEvent:Connect(function(sender, packet)
 	end
 
 	if action == "HealPlayer" then
-		local target = findPlayer(payload.targetName)
-		if not target then
-			reply(sender, requestId, false, "Player not found.")
-			return
-		end
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
 		local humanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
-		if not humanoid then
-			reply(sender, requestId, false, "Humanoid not found.")
-			return
-		end
+		if not humanoid then reply(sender, requestId, false, "Humanoid not found.") return end
 		humanoid.Health = humanoid.MaxHealth
 		reply(sender, requestId, true, "Player healed.")
 		return
 	end
 
 	if action == "KickPlayer" then
-		local target = findPlayer(payload.targetName)
-		if not target then
-			reply(sender, requestId, false, "Player not found.")
-			return
-		end
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
 		target:Kick(tostring(payload.reason or "Kicked by admin panel"))
 		reply(sender, requestId, true, "Player kicked.")
 		return
 	end
 
 	if action == "BanPlayer" then
-		local target = findPlayer(payload.targetName)
-		if not target then
-			reply(sender, requestId, false, "Player not found.")
-			return
-		end
-
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
 		local success, message = handleBan(sender, target, payload)
 		reply(sender, requestId, success, message)
 		return
 	end
 
 	if action == "TeleportPlayerToMe" then
-		local target = findPlayer(payload.targetName)
-		if not target then
-			reply(sender, requestId, false, "Player not found.")
-			return
-		end
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
 		local success, message = handleTeleportToAdmin(sender, target)
 		reply(sender, requestId, success, message)
+		return
+	end
+
+	if action == "RemoveBodyPart" then
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
+		local character, cErr = getCharacter(target)
+		if not character then reply(sender, requestId, false, cErr) return end
+		local part, pErr = getBodyPart(character, payload.partName)
+		if not part then reply(sender, requestId, false, pErr) return end
+		part:Destroy()
+		reply(sender, requestId, true, "Removed part: " .. tostring(payload.partName))
+		return
+	end
+
+	if action == "IgniteBodyPart" then
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
+		local character, cErr = getCharacter(target)
+		if not character then reply(sender, requestId, false, cErr) return end
+		local part, pErr = getBodyPart(character, payload.partName)
+		if not part then reply(sender, requestId, false, pErr) return end
+		local fire = part:FindFirstChildOfClass("Fire")
+		if not fire then
+			fire = Instance.new("Fire")
+			fire.Heat = 8
+			fire.Size = 6
+			fire.Parent = part
+		end
+		reply(sender, requestId, true, "Ignited part: " .. tostring(payload.partName))
+		return
+	end
+
+	if action == "SetFrozen" then
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
+		local character, cErr = getCharacter(target)
+		if not character then reply(sender, requestId, false, cErr) return end
+		local root = character:FindFirstChild("HumanoidRootPart")
+		if not root then reply(sender, requestId, false, "HumanoidRootPart not found.") return end
+		root.Anchored = payload.frozen == true
+		reply(sender, requestId, true, root.Anchored and "Player frozen." or "Player thawed.")
+		return
+	end
+
+	if action == "GiveForceField" then
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
+		local character, cErr = getCharacter(target)
+		if not character then reply(sender, requestId, false, cErr) return end
+		local ff = Instance.new("ForceField")
+		ff.Visible = true
+		ff.Parent = character
+		Debris:AddItem(ff, math.clamp(tonumber(payload.duration) or 8, 1, 60))
+		reply(sender, requestId, true, "ForceField granted.")
+		return
+	end
+
+	if action == "SetMovement" then
+		local target, err = getTarget(packet)
+		if not target then reply(sender, requestId, false, err) return end
+		local humanoid = target.Character and target.Character:FindFirstChildOfClass("Humanoid")
+		if not humanoid then reply(sender, requestId, false, "Humanoid not found.") return end
+		local changed = false
+		local ws = tonumber(payload.walkSpeed)
+		if ws then humanoid.WalkSpeed = math.clamp(ws, 0, 200); changed = true end
+		local jp = tonumber(payload.jumpPower)
+		if jp then humanoid.JumpPower = math.clamp(jp, 0, 300); changed = true end
+		if not changed then reply(sender, requestId, false, "No valid movement values.") return end
+		reply(sender, requestId, true, "Movement stats updated.")
 		return
 	end
 
